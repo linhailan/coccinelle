@@ -150,7 +150,7 @@ let mk_pretty_printers
     | SizeOfType  (t),     [i1;i2;i3] ->
         pr_elem i1; pr_elem i2; pp_type t; pr_elem i3
     | Cast    (t, a, e),   [i1;i2] ->
-        pr_elem i1; pp_type t; a +> pp_attributes pr_elem pr_space;
+        pr_elem i1; pp_type t; pp_attributes a;
         pr_elem i2; pp_expression e;
 
     | StatementExpr (statxs, [ii1;ii2]),  [i1;i2] ->
@@ -555,17 +555,21 @@ and pp_string_format (e,ii) =
       | (ParenType t, _)                           -> pp_base_type t sto
       | (Array (eopt, t), [i1;i2])                 -> pp_base_type t sto
       | (FunctionType (returnt, paramst), [i1;i2]) ->
-          pp_base_type returnt sto;
+          pp_base_type returnt sto
 
-
-      | (StructUnion (su, sopt, fields),iis) ->
+      | (StructUnion (su, sopt, base_classes, fields),iis) ->
           print_sto_qu (sto, qu);
 
           (match sopt,iis with
-          | Some s , [i1;i2;i3;i4] ->
-              pr_elem i1; pr_space(); pr_elem i2; pr_space(); pr_elem i3;
-          | None, [i1;i2;i3] ->
-              pr_elem i1; pr_space(); pr_elem i2;
+          | Some s , [su;id;dotdot;lb;rb] ->
+              pr_elem su; pr_space(); pr_elem id; pr_space(); pr_elem dotdot;
+	      pp_list pp_base_class base_classes; pr_space(); pr_elem lb
+          | Some s , [su;id;lb;rb] ->
+              pr_elem su; pr_space(); pr_elem id; pr_space(); pr_elem lb;
+          | None , [su;dotdot;lb;rb] ->
+              pr_elem su; pr_space(); pr_elem dotdot; pr_space(); pr_elem lb;
+          | None, [su;lb;rb] ->
+              pr_elem su; pr_space(); pr_elem lb;
           | x -> raise (Impossible 101)
 	  );
 
@@ -573,12 +577,12 @@ and pp_string_format (e,ii) =
 	  pr_nl();
 
           (match sopt,iis with
-          | Some s , [i1;i2;i3;i4] -> pr_elem i4
-          | None, [i1;i2;i3] ->       pr_elem i3;
+          | Some s , [i1;i2;i3;i4;i5] -> pr_elem i5
+          | Some s , [i1;i2;i3;i4] ->    pr_elem i4
+          | None, [i1;i2;i3;i4] ->       pr_elem i4
+          | None, [i1;i2;i3] ->          pr_elem i3
           | x -> raise (Impossible 102)
-	  );
-
-
+	  )
 
       | (Enum  (sopt, enumt), iis) ->
           print_sto_qu (sto, qu);
@@ -774,6 +778,12 @@ and pp_string_format (e,ii) =
     | CppDirectiveStruct cpp -> pp_directive cpp
     | IfdefStruct ifdef -> pp_ifdef ifdef
 
+    (* C++ *)
+    | FunctionField def -> pp_def def
+    | PublicLabel ii | ProtectedLabel ii | PrivateLabel ii ->
+	let (kwd,dotdot) = Common.tuple_of_list2 ii in
+	pr_elem kwd; pr_elem dotdot
+
 (* used because of DeclList, in    int i,*j[23];  we don't print anymore the
    int before *j *)
   and (pp_type_with_ident_rest: (unit -> unit) option ->
@@ -784,8 +794,7 @@ and pp_string_format (e,ii) =
       let print_ident ident = Common.do_option (fun f ->
         (* XXX attrs +> pp_attributes pr_elem pr_space; *)
         f();
-	(if not(endattrs = []) then pr_space());
-        endattrs +> pp_attributes pr_elem pr_space
+        pp_attributes endattrs
 	) ident
       in
 
@@ -794,7 +803,7 @@ and pp_string_format (e,ii) =
       | (NoType, iis)                           -> ()
       | (BaseType _, iis)                       -> print_ident ident
       | (Enum  (sopt, enumt), iis)              -> print_ident ident
-      | (StructUnion (_, sopt, fields),iis)     -> print_ident ident
+      | (StructUnion (_, sopt, base_classes, fields),iis) -> print_ident ident
       | (StructUnionName (s, structunion), iis) -> print_ident ident
       | (EnumName  s, iis)                      -> print_ident ident
       | (Decimal _, iis)                        -> print_ident ident
@@ -906,12 +915,12 @@ and pp_string_format (e,ii) =
       | (Array (eopt, t), [i1;i2]) -> pp_type_left t
       | (FunctionType (returnt, paramst), [i1;i2]) -> pp_type_left returnt
 
-      | (ParenType t, _) ->  failwith "parenType"
+      | (ParenType t, _) ->  failwith "pp_type_left: unexpected parenType"
 
 
       | (BaseType _, iis)    -> ()
       | (Enum  (sopt, enumt), iis) -> ()
-      | (StructUnion (_, sopt, fields),iis)  -> ()
+      | (StructUnion (_, sopt, _, fields),iis)  -> ()
       | (StructUnionName (s, structunion), iis) -> ()
       | (EnumName  s, iis) -> ()
       | (Decimal(l,p), iis) -> ()
@@ -969,7 +978,7 @@ and pp_string_format (e,ii) =
 
     | (BaseType _, iis)        -> ()
     | (Enum  (sopt, enumt), iis) -> ()
-    | (StructUnion (_, sopt, fields),iis)-> ()
+    | (StructUnion (_, sopt, _, fields),iis)-> ()
     | (StructUnionName (s, structunion), iis) -> ()
     | (EnumName  s, iis) -> ()
     | (Decimal(l,p), iis) -> ()
@@ -1062,6 +1071,7 @@ and pp_string_format (e,ii) =
           pp_argument e;
 	);
 	pr_elem rp;
+	pp_attributes attrs;
 	pr_elem iiend;
 
     | MacroDecl
@@ -1077,6 +1087,7 @@ and pp_string_format (e,ii) =
 	);
 
 	pr_elem rp;
+	pp_attributes attrs;
 
     | MacroDeclInit
 	((sto, s, es, ini), iis::lp::rp::eq::iiend::ifakestart::iisto) ->
@@ -1146,10 +1157,9 @@ and pp_init (init, iinit) =
 
 
 (* ---------------------- *)
-  and pp_attributes pr_elem pr_space attrs =
-    attrs +> List.iter (fun (attr, ii) ->
-      ii +> List.iter pr_elem;
-    );
+  and pp_attributes attrs =
+    if not (attrs = []) then pr_space();
+    Common.print_between pr_space pp_attribute attrs;
 
   and pp_attribute (e,ii) =
     match (e,ii) with
@@ -1176,22 +1186,30 @@ and pp_init (init, iinit) =
     let {f_name = name;
           f_type = (returnt, (paramst, (b, iib)));
           f_storage = sto;
+	  f_constr_inherited = constr_inh;
           f_body = statxs;
           f_attr = attrs;
 	} = defbis in
+    let (idotdot,isto) =
+      if !Flag.c_plus_plus = Flag.Off
+      then ([],isto)
+      else
+	match constr_inh with
+	  [] -> ([],isto)
+	| _ -> ([List.hd isto],List.tl isto) in
     pr_elem ifakestart;
 
     pp_type_with_ident None (Some (sto, isto))
       returnt None Ast_c.noattr Ast_c.noattr;
 
-    pp_attributes pr_elem pr_space attrs;
+    pp_attributes attrs;
     pr_space();
     pp_name name;
 
     pr_elem iifunc1;
 
-        (* not anymore, cf tests/optional_name_parameter and
-           macro_parameter_shortcut.c
+    (* not anymore, cf tests/optional_name_parameter and
+       macro_parameter_shortcut.c
            (match paramst with
            | [(((bool, None, t), ii_b_s), iicomma)] ->
                assert
@@ -1229,9 +1247,14 @@ and pp_init (init, iinit) =
         *)
     pp_param_list paramst;
     iib +> List.iter pr_elem;
+    pr_elem iifunc2;
 
-
-    pr_elem iifunc2
+    if !Flag.c_plus_plus = Flag.Off && constr_inh <> []
+    then
+      begin
+	pr_elem (List.hd idotdot);
+	pp_list pp_expression constr_inh
+      end
 
   and pp_def def =
     let defbis, ii = def in
@@ -1314,14 +1337,20 @@ and pp_init (init, iinit) =
 	List.iter pr_elem ii
 
   and pp_define_param_list dparams =
-    pp_list (fun (s,iis) -> iis +> List.iter pr_elem) dparams in
+    pp_list (fun (s,iis) -> iis +> List.iter pr_elem) dparams
+
+  and pp_base_class (bc,ii) =
+    match bc with
+      ClassName name -> pp_name name
+    | CPublic name | CProtected name | CPrivate name ->
+	let tag = Common.tuple_of_list1 ii in
+	pr_elem tag; pr_space(); pp_name name in
 
   let rec pp_toplevel = function
     | Declaration decl -> pp_decl decl
     | Definition def -> pp_def def
 
     | CppTop directive -> pp_directive directive
-
 
     | MacroTop (s, es,   [i1;i2;i3;i4]) ->
 	pr_elem i1;
@@ -1334,7 +1363,6 @@ and pp_init (init, iinit) =
 	pr_elem i3;
 	pr_elem i4;
 
-
     | EmptyDef ii -> ii +> List.iter pr_elem
     | NotParsedCorrectly ii ->
 	assert (List.length ii >= 1);
@@ -1346,7 +1374,7 @@ and pp_init (init, iinit) =
     | Namespace (tls, [i1; i2; i3; i4]) ->
 	pr_elem i1; pr_elem i2; pr_elem i3;
 	List.iter pp_toplevel tls;
-	pr_elem i4;
+	pr_elem i4
     | (MacroTop _) | (Namespace _) -> raise (Impossible 120) in
 
 
@@ -1496,6 +1524,8 @@ and pp_init (init, iinit) =
 	pp_statement (MacroStmt,ii)
     | F.Asm (st, (asmbody,ii)) ->
 	pp_statement (Asm asmbody, ii)
+    | F.NestedFunc (st, (def,ii)) ->
+	pp_statement (NestedFunc def, ii)
 
     | F.Exec(st,(code,ii)) ->
 	pp_statement (Exec code, ii)

@@ -382,7 +382,7 @@ let plus_attachable only_plus (tok,_) =
 
 (* it would seem that this should all be skips
   | PC.TWhen(clt) |  PC.TWhenTrue(clt) |  PC.TWhenFalse(clt)
-  | PC.TAny(clt) | PC.TStrict(clt) | PC.TEllipsis(clt)
+  | PC.TAny(clt) | PC.TStrict(clt)
   | PC.TOEllipsis(clt) | PC.TCEllipsis(clt)
   | PC.TPOEllipsis(clt) | PC.TPCEllipsis(clt)
 *)
@@ -409,6 +409,8 @@ let plus_attachable only_plus (tok,_) =
   | PC.TMetaAttribute(nm,_,_,_) -> NOTPLUS
   | PC.TSub(clt) -> NOTPLUS
   | PC.TDirective(_,clt) -> NOTPLUS
+
+  | PC.TEllipsis(clt) -> NOTPLUS
 
   | _ -> SKIP
 
@@ -844,7 +846,11 @@ let tokens_all_full token table file get_ats lexbuf end_predicate :
 	(more,(result, info)::rest)
     in aux ()
   with
-    e -> smplparseerror (Common.error_message file (wrap_lexbuf_info lexbuf) )
+    Lexer_cocci.Lexical s ->
+      smplparseerror
+	(Printf.sprintf "lexical error: %s\n  %s\n" s
+	   (Common.error_message file (wrap_lexbuf_info lexbuf)))
+  | e -> smplparseerror (Common.error_message file (wrap_lexbuf_info lexbuf))
 
 let in_list list tok =
   List.mem tok list

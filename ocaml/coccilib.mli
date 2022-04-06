@@ -60,7 +60,7 @@ module Ast_c :
       | Decimal of constExpression * constExpression option
       | FunctionType of functionType
       | Enum of string option * enumType
-      | StructUnion of structUnion * string option * structType
+      | StructUnion of structUnion * string option * base_class wrap2 list * structType
       | EnumName of string
       | StructUnionName of structUnion * string
       | TypeName of name * fullType option
@@ -84,13 +84,17 @@ module Ast_c :
     and floatType =
 	Ast_c.floatType =
 	CFloat | CDouble | CLongDouble | CFloatComplex | CDoubleComplex
-      | CLongDoubleComplex
-    and structUnion = Ast_c.structUnion = Struct | Union
+      | CLongDoubleComplex | CUnknownComplex
+    and structUnion = Ast_c.structUnion = Struct | Union | Class
     and structType = field list
     and field =
       Ast_c.field =
         DeclarationField of field_declaration
       | EmptyField of info
+      | FunctionField of definition
+      | PublicLabel of info list
+      | ProtectedLabel of info list
+      | PrivateLabel of info list
       | MacroDeclField of (string * argument wrap2 list) wrap
       | CppDirectiveStruct of cpp_directive
       | IfdefStruct of ifdef_directive
@@ -345,11 +349,19 @@ module Ast_c :
       f_name : name;
       f_type : functionType;
       f_storage : storage;
+      f_constr_inherited: expression wrap2 list;
       f_body : compound;
       f_attr : attribute list;
       f_endattr : attribute list;
       f_old_c_style : declaration list option;
     }
+    and base_class = base_class_bis wrap
+    and base_class_bis =
+	Ast_c.base_class_bis =
+	ClassName of name
+      | CPublic of name
+      | CProtected of name
+      | CPrivate of name
     and cpp_directive =
       Ast_c.cpp_directive =
         Define of define
@@ -748,6 +760,12 @@ module Parser_c :
       | Tdefined of Ast_c.info
       | TOParCplusplusInit of Ast_c.info
       | Tnamespace of Ast_c.info
+      | Tcpp_struct of Ast_c.info
+      | Tcpp_union of Ast_c.info
+      | Tclass of Ast_c.info
+      | Tprivate of Ast_c.info
+      | Tpublic of Ast_c.info
+      | Tprotected of Ast_c.info
       | Trestrict of Ast_c.info
       | Tasm of Ast_c.info
       | Tattribute of Ast_c.info

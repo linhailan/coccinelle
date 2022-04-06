@@ -56,7 +56,6 @@ type error =
   | GotoCantFindLabel of string * Common.parse_info
   | NoExit of Common.parse_info
   | DuplicatedLabel of string
-  | NestedFunc
   | ComputedGoto
   | Define of Common.parse_info
 
@@ -159,21 +158,29 @@ let initial_info = {
   errorexiti = None;
 }
 
+type 'a outer = Outer of 'a | Inner of 'a
+
+let rec do_ast_to_control_flow isouter e = (* entry point! *)
+
+let outer_e =
+  if isouter
+  then Outer e
+  else Inner e in  
 
 (*****************************************************************************)
 (* (Semi) Globals, Julia's style. *)
 (*****************************************************************************)
 (* global graph *)
-let g = ref (new Control_flow_c.G.ograph_mutable)
+let g = ref (new Control_flow_c.G.ograph_mutable) in
 
-let counter_for_labels = ref 0
-let counter_for_braces = ref 0
+let counter_for_labels = ref 0 in
+let counter_for_braces = ref 0 in
 
 (* For switch we use compteur too (or pass int ref) cos need know order of the
  * case if then later want to go from CFG to (original) AST.
  * update: obsolete now I think
  *)
-let counter_for_switch = ref 0
+let counter_for_switch = ref 0 in
 
 
 (*****************************************************************************)
@@ -217,7 +224,7 @@ let compute_labels_and_create_them st =
 	| _ -> k exp)
     };
     !h;
-  end
+  end in
 
 
 (* ctl_braces: *)
@@ -235,7 +242,7 @@ let insert_all_braces xs starti nodety str =
     fn nodety str newi;
     !g#add_arc ((acc, newi), Direct);
     newi
-  ) starti
+  ) starti in
 
 (*****************************************************************************)
 (* Statement *)
@@ -980,7 +987,9 @@ let rec aux_statement : (nodei option * xinfo) -> statement -> nodei option =
 
   (* ------------------------- *)
   | Ast_c.NestedFunc def ->
-      raise (Error NestedFunc)
+      let newi = !g +> add_node (NestedFunc (stmt, ((def,ii)))) lbl "asm;" in
+      !g +> add_arc_opt (starti, newi);
+      Some newi
 
 and mk_If (starti :nodei option) (labels :int list) (xi_lbl :xinfo)
           (stmt :statement)
@@ -1285,7 +1294,7 @@ and aux_statement_list starti (xi, newxi) statxs =
 
         Some taili
 
-  ) starti
+  ) starti in
 
 
 (*****************************************************************************)
@@ -1299,6 +1308,7 @@ let aux_definition: nodei -> definition -> unit = fun topi funcdef ->
   let ({f_name = namefuncs;
         f_type = functype;
         f_storage= sto;
+	f_constr_inherited = constr_inh;
         f_body= compound;
         f_attr= attrs;
         f_endattr= endattrs;
@@ -1320,6 +1330,7 @@ let aux_definition: nodei -> definition -> unit = fun topi funcdef ->
       Ast_c.f_name = namefuncs;
       f_type = functype;
       f_storage = sto;
+      f_constr_inherited = constr_inh;
       f_attr = attrs;
       f_endattr = endattrs;
       f_body = [] (* empty body *);
@@ -1346,7 +1357,7 @@ let aux_definition: nodei -> definition -> unit = fun topi funcdef ->
   in
 
   let lasti = aux_statement (Some enteri, info) topstatement in
-  !g +> add_arc_opt (lasti, exiti)
+  !g +> add_arc_opt (lasti, exiti) in
 
 (*****************************************************************************)
 (* Entry point *)
@@ -1367,11 +1378,7 @@ let specialdeclmacro_to_stmt (s, args, ii) =
   let identfinal = Ast_c.mk_e (Ast_c.Ident (ident)) Ast_c.noii in
   let f = Ast_c.mk_e (Ast_c.FunCall (identfinal, args)) [iiopar;iicpar] in
   let stmt = Ast_c.mk_st (Ast_c.ExprStatement (Some f)) [iiptvirg] in
-  stmt,  (f, [iiptvirg])
-
-
-
-let rec ast_to_control_flow e =
+  stmt,  (f, [iiptvirg]) in
 
   (* globals (re)initialialisation *)
   g := (new Control_flow_c.G.ograph_mutable);
@@ -1381,46 +1388,38 @@ let rec ast_to_control_flow e =
 
   let topi = !g +> add_node TopNode lbl_0 "[top]" in
 
+  let do_definition ((defbis,_) as def) =
+    let _funcs = defbis.f_name in
+    let _c = defbis.f_body in
+      (* if !Flag.show_misc then pr2 ("build info function " ^ funcs); *)
+    aux_definition topi def;
+    [(outer_e,Some !g)] in
+
+  let do_decl elem str =
+    let ei =   !g +> add_node elem    lbl_0 str in
+    let endi = !g +> add_node EndNode lbl_0 "[end]" in
+
+    !g#add_arc ((topi, ei),Direct);
+    !g#add_arc ((ei, endi),Direct);
+    [(outer_e,Some !g)] in
+
   match e with
   | Ast_c.Namespace (defs, _) ->
-      (* todo: incorporate the other defs *)
-      let rec loop defs =
-	match defs with
-	| [] -> None
-	| def :: defs ->
-	    match ast_to_control_flow def with
-	    | None -> loop defs
-	    | x -> x in
-      loop defs
-  | Ast_c.Definition ((defbis,_) as def) ->
-      let _funcs = defbis.f_name in
-      let _c = defbis.f_body in
-      (* if !Flag.show_misc then pr2 ("build info function " ^ funcs); *)
-      aux_definition topi def;
-      Some !g
+      let self =
+	if isouter
+	then [(outer_e,None)]
+	else [] in
+      self @ List.concat (List.map (do_ast_to_control_flow false) defs)
 
-  | Ast_c.Declaration _
-  | Ast_c.CppTop (Ast_c.Include _)
-  | Ast_c.MacroTop _
-    ->
-      let (elem, str) =
-        match e with
-        | Ast_c.Declaration decl ->
-            (Control_flow_c.Decl decl),  "decl"
-        | Ast_c.CppTop (Ast_c.Include inc) ->
-            (Control_flow_c.Include inc), "#include"
-        | Ast_c.MacroTop (s, args, ii) ->
-            let (st, (e, ii)) = specialdeclmacro_to_stmt (s, args, ii) in
-            (Control_flow_c.ExprStatement (st, (Some e, ii))), "macrotoplevel"
-          (*(Control_flow_c.MacroTop (s, args,ii), "macrotoplevel") *)
-        | _ -> raise (Impossible 73)
-      in
-      let ei =   !g +> add_node elem    lbl_0 str in
-      let endi = !g +> add_node EndNode lbl_0 "[end]" in
+  | Ast_c.Definition def -> do_definition def
 
-      !g#add_arc ((topi, ei),Direct);
-      !g#add_arc ((ei, endi),Direct);
-      Some !g
+  | Ast_c.Declaration decl ->
+      do_decl (Control_flow_c.Decl decl) "decl"
+  | Ast_c.CppTop (Ast_c.Include inc) ->
+      do_decl (Control_flow_c.Include inc) "#include"
+  | Ast_c.MacroTop (s, args, ii) ->
+      let (st, (e, ii)) = specialdeclmacro_to_stmt (s, args, ii) in
+      do_decl (Control_flow_c.ExprStatement (st, (Some e, ii))) "macrotoplevel"
 
   | Ast_c.CppTop (Ast_c.Define ((id,ii), (defkind, defval)))  ->
       let s =
@@ -1509,7 +1508,7 @@ let rec ast_to_control_flow e =
 *)
       );
 
-      Some !g
+      [(outer_e,Some !g)]
 
   | Ast_c.CppTop (Ast_c.Pragma ((id,rest),ii))  ->
       let elem = PragmaHeader ((id,rest),ii) in
@@ -1519,10 +1518,34 @@ let rec ast_to_control_flow e =
 
       !g#add_arc ((topi, ei),Direct);
       !g#add_arc ((ei, endi),Direct);
-      Some !g
+      [(outer_e,Some !g)]
 
-  | _ -> None
+  | _ -> if isouter then [(outer_e,None)] else []
 
+let get_defs_in_structs e =
+  let defs = ref [] in
+  let bigf = { Visitor_c.default_visitor_c with
+	       Visitor_c.kstatement = (fun (k, bigf) stm ->
+		 (match Ast_c.unwrap_st stm with
+		 | Ast_c.NestedFunc def -> defs := def :: !defs
+		 | _ -> ());
+		 k stm);
+	       Visitor_c.kfield = (fun (k, bigf) fld ->
+		 (match fld with
+		   FunctionField def -> defs := def :: !defs
+		 | _ -> ());
+		 k fld) } in
+  Visitor_c.vk_toplevel bigf e;
+  !defs (* reversed *)
+
+let ast_to_control_flow e =
+  let idefs = get_defs_in_structs e in (* reversed *)
+  let igraphs =
+    List.fold_left
+      (fun prev e ->
+	(do_ast_to_control_flow false (Ast_c.Definition e)) @ prev)
+      [] idefs in
+  igraphs @ (do_ast_to_control_flow true e)
 
 (*****************************************************************************)
 (* CFG loop annotation *)
@@ -1685,8 +1708,6 @@ let report_error error =
 	pr2 ("FLOW: can't find exit or error exit: " ^ error_from_info info)
     | DuplicatedLabel s ->
 	pr2 ("FLOW: duplicate label " ^ s)
-    | NestedFunc  ->
-	pr2 ("FLOW: not handling yet nested function")
     | ComputedGoto ->
 	pr2 ("FLOW: not handling computed goto yet")
     | Define info ->

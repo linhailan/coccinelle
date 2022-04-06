@@ -109,6 +109,22 @@ let addTypeD     = function
   | ((Middle3 x,ii),      ({typeD = ((a,None,c),ii2)} as v))  ->
       {v with typeD = (a, Some x,c),ii @ ii2}
 
+  | ((Right3 (BaseType (FloatType CUnknownComplex)),ii),
+     ({typeD = ((a,b,Some (BaseType (FloatType CFloat))),ii2)} as v)) ->
+       {v with typeD = (a,b, Some (BaseType (FloatType CFloatComplex))),ii @ ii2}
+
+  | ((Right3 (BaseType (FloatType CUnknownComplex)),ii),
+     ({typeD = ((a,b,Some (BaseType (FloatType CDouble))),ii2)} as v)) ->
+       {v with typeD = (a,b, Some (BaseType (FloatType CDoubleComplex))),ii @ ii2}
+
+  | ((Right3 (BaseType (FloatType CFloat)),ii),
+     ({typeD = ((a,b,Some (BaseType (FloatType CUnknownComplex))),ii2)} as v)) ->
+       {v with typeD = (a,b, Some (BaseType (FloatType CFloatComplex))),ii @ ii2}
+
+  | ((Right3 (BaseType (FloatType CDouble)),ii),
+     ({typeD = ((a,b,Some (BaseType (FloatType CUnknownComplex))),ii2)} as v)) ->
+       {v with typeD = (a,b, Some (BaseType (FloatType CDoubleComplex))),ii @ ii2}
+
   | ((Right3 t,ii),       ({typeD = ((a,b,Some x),ii2)} as v)) ->
       let mktype t ii = (({const=false;volatile=false;},[]),(t,ii)) in
       computed_warning
@@ -282,7 +298,7 @@ let (fixOldCDecl: fullType -> fullType) = fun ty ->
 let fixFunc (typ, compound, old_style_opt) =
   let (cp,iicp) = compound in
 
-  let ((name, ty,   (st,iist),  attrs), endattrs) = typ in
+  let ((name, ty, (st,iist), attrs, iidotdot, constr_inh), endattrs) = typ in
 
   let (qu, tybis) = ty in
 
@@ -337,6 +353,7 @@ let fixFunc (typ, compound, old_style_opt) =
       {f_name = name;
        f_type = (fullt, (params, abool));
        f_storage = st;
+       f_constr_inherited = constr_inh;
        f_body =
 	if !Flag_parsing_c.parsing_header_for_types
 	then []
@@ -345,7 +362,7 @@ let fixFunc (typ, compound, old_style_opt) =
        f_endattr = endattrs;
        f_old_c_style = old_style_opt;
       },
-      (iifunc @ iicp @ [iistart] @ iist)
+      (iifunc @ iicp @ [iistart] @ iidotdot @ iist)
   | _ ->
       raise
         (Semantic
@@ -367,7 +384,7 @@ let et s () =
 
 
 let fix_add_params_ident x =
-  let (s, ty, st, _attrs) = x in
+  let (s, ty, st, _attrs, _dotdot, _constr_inh) = x in
   match Ast_c.unwrap_typeC ty with
   | FunctionType (fullt, (params, bool)) ->
 
@@ -436,6 +453,12 @@ let postfakeInfo pii  =
     comments_tag = ref Ast_c.emptyComments;
     danger = ref Ast_c.NoDanger;
   }
+
+(*let check_cpp tok =
+  if !Flag.c_plus_plus = Flag.Off
+  then
+    let i = Ast_c.parse_info_of_info tok in
+    raise (Semantic("C++ code detected, try using the --c++ option", i))*)
 
 %}
 
@@ -508,6 +531,7 @@ let postfakeInfo pii  =
        Tbreak Telse Tswitch Tcase Tcontinue Tfor Tdo Tif  Twhile Treturn
        Tgoto Tdefault
        Tsizeof Tnew Tdelete Tdefined TOParCplusplusInit Tnamespace
+       Tcpp_struct Tcpp_union Tclass Tprivate Tpublic Tprotected
 
 /*(* C99 *)*/
 %token <Ast_c.info>
@@ -729,12 +753,10 @@ translation_unit:
 ident:
  | TIdent       { $1 }
  | TypedefIdent { $1 }
- | Tcomplex     { ("complex", $1) }
 
 
 identifier:
  | TIdent       { $1 }
- | Tcomplex     { ("complex", $1) }
 
 /*
 (* cppext: string concatenation of idents
@@ -752,7 +774,6 @@ ident_cpp:
  | TypedefIdent
      { RegularName (mk_string_wrap $1) }
  | ident_extra_cpp { $1 }
- | Tcomplex     { RegularName (mk_string_wrap ("complex", $1)) }
 
 ident_extra_cpp:
  | TIdent TCppConcatOp identifier_cpp_list
@@ -793,6 +814,8 @@ cond_expr:
      { $1 }
  | arith_expr TWhy gcc_opt_expr TDotDot cond_expr
      { mk_e (CondExpr ($1,$3,$5)) [$2;$4] }
+ | Tnew new_argument               { mk_e(New (None, $2))     [$1] }
+ | Tnew TOPar argument_list_ne TCPar new_argument { mk_e(New (Some $3, $5))             [$1; $2; $4] }
 
 
 arith_expr:
@@ -839,8 +862,6 @@ unary_expr:
        match (fst $3) with (* warn about dropped attributes *)
          [] -> ret
        | _ -> warning "attributes found in sizeof(...), dropping" ret }
- | Tnew new_argument               { mk_e(New (None, $2))     [$1] }
- | Tnew TOPar argument_list_ne TCPar new_argument { mk_e(New (Some $3, $5))             [$1; $2; $4] }
  | Tdelete cast_expr               { mk_e(Delete(false, $2))  [$1] }
  | Tdelete TOCro TCCro cast_expr   { mk_e(Delete(true, $4))   [$1;$2;$3] }
  | Tdefined identifier_cpp         { mk_e(Defined $2)         [$1] }
@@ -860,9 +881,16 @@ new_argument:
  | TypedefIdent TOPar TCPar
      { let fn = mk_e(Ident (RegularName (mk_string_wrap $1))) [] in
        Left (mk_e(FunCall (fn, [])) [$2;$3]) }
- | type_spec
+ | simple_type muls
      { let ty = addTypeD ($1,nullDecl) in
        let ((returnType,hasreg), iihasreg) = fixDeclSpecForParam ty in
+       let returnType =
+	 let rec loop = function
+	     [] -> returnType
+	   | mul::muls ->
+	       let res = loop muls in
+	       mk_ty (Pointer res) [mul] in
+	 loop (List.rev $2) in
        Right (ArgType { p_namei = None; p_type = returnType;
                         p_register = hasreg, iihasreg; p_attr = [];
                         p_midattr = []; p_endattr = [];
@@ -878,6 +906,10 @@ new_argument:
 	   Right(ArgType pty)
        | _ -> raise (Impossible 88)
      }
+
+muls:
+   {[]}
+ | muls TMul { $1@[$2] }
 
 unary_op:
  | TAnd   { GetRef,     $1 }
@@ -1252,14 +1284,13 @@ token:
 /*(*-----------------------------------------------------------------------*)*/
 /*(* Type spec, left part of a type *)*/
 /*(*-----------------------------------------------------------------------*)*/
-type_spec2:
+simple_type:
  | Tvoid                { Right3 (BaseType Void),            [$1] }
  | Tchar                { Right3 (BaseType (IntType CChar)), [$1]}
  | Tint                 { Right3 (BaseType (IntType (Si (Signed,CInt)))), [$1]}
  | Tfloat               { Right3 (BaseType (FloatType CFloat)),  [$1]}
  | Tdouble              { Right3 (BaseType (FloatType CDouble)), [$1] }
- | Tfloat Tcomplex      { Right3 (BaseType (FloatType CFloatComplex)),  [$1;$2]}
- | Tdouble Tcomplex     { Right3 (BaseType (FloatType CDoubleComplex)), [$1;$2] }
+ | Tcomplex             { Right3 (BaseType (FloatType CUnknownComplex)), [$1] }
  | Tsize_t              { Right3 (BaseType SizeType),            [$1] }
  | Tssize_t             { Right3 (BaseType SSizeType),           [$1] }
  | Tptrdiff_t           { Right3 (BaseType PtrDiffType),         [$1] }
@@ -1267,8 +1298,6 @@ type_spec2:
  | Tlong                { Middle3 Long,   [$1]}
  | Tsigned              { Left3 Signed,   [$1]}
  | Tunsigned            { Left3 UnSigned, [$1]}
- | struct_or_union_spec { Right3 (fst $1), snd $1 }
- | enum_spec            { Right3 (fst $1), snd $1 }
  | Tdecimal TOPar const_expr TComma const_expr TCPar
      { Right3 (Decimal($3,Some $5)), [$1;$2;$4;$6] }
  | Tdecimal TOPar const_expr TCPar
@@ -1311,6 +1340,11 @@ type_spec2:
        match (fst $3) with (* warn about dropped attributes *)
          [] -> ret
        | _ -> warning "attributes found in typeof(...), dropping" ret }
+
+type_spec2:
+   simple_type { $1 }
+ | struct_or_union_spec { Right3 (fst $1), snd $1 }
+ | enum_spec            { Right3 (fst $1), snd $1 }
 
 /*(*----------------------------*)*/
 /*(* workarounds *)*/
@@ -1406,7 +1440,6 @@ direct_d:
      { (fst $1,fun x->(snd $1)
        (mk_ty (FunctionType (x, $3)) [$2;$4]))
      }
-
 
 /*(*----------------------------*)*/
 /*(* workarounds *)*/
@@ -1901,11 +1934,21 @@ gcc_comma_opt_struct:
 /*(*************************************************************************)*/
 
 s_or_u_spec2:
+ | cpp_struct_or_union ident TDotDot base_classes tobrace_struct cpp_struct_decl_list_gcc tcbrace_struct
+     { StructUnion (fst $1, Some (fst $2), $4, $6),  [snd $1;snd $2;$3;$5;$7]  }
+ | cpp_struct_or_union ident tobrace_struct cpp_struct_decl_list_gcc tcbrace_struct
+     { StructUnion (fst $1, Some (fst $2), [], $4),  [snd $1;snd $2;$3;$5]  }
  | struct_or_union ident tobrace_struct struct_decl_list_gcc tcbrace_struct
-     { StructUnion (fst $1, Some (fst $2), $4),  [snd $1;snd $2;$3;$5]  }
+     { StructUnion (fst $1, Some (fst $2), [], $4),  [snd $1;snd $2;$3;$5]  }
+ | cpp_struct_or_union       TDotDot base_classes tobrace_struct cpp_struct_decl_list_gcc tcbrace_struct
+     { StructUnion (fst $1, None, $3, $5), [snd $1;$2;$4;$6] }
+ | cpp_struct_or_union       tobrace_struct cpp_struct_decl_list_gcc tcbrace_struct
+     { StructUnion (fst $1, None, [], $3), [snd $1;$2;$4] }
  | struct_or_union       tobrace_struct struct_decl_list_gcc tcbrace_struct
-     { StructUnion (fst $1, None, $3), [snd $1;$2;$4] }
+     { StructUnion (fst $1, None, [], $3), [snd $1;$2;$4] }
  | struct_or_union ident
+     { StructUnionName (fst $1, fst $2), [snd $1;snd $2] }
+ | cpp_struct_or_union ident
      { StructUnionName (fst $1, fst $2), [snd $1;snd $2] }
 
 struct_or_union2:
@@ -1915,8 +1958,16 @@ struct_or_union2:
  | Tstruct attributes   { Struct, $1 (* TODO *) }
  | Tunion  attributes   { Union, $1  (* TODO *) }
 
+cpp_struct_or_union2:
+ | Tcpp_struct   { Struct, $1 }
+ | Tcpp_union    { Union, $1 }
+ | Tclass        { Class, $1 }
+ /*(* gccext: *)*/
+ | Tcpp_struct attributes   { Struct, $1 (* TODO *) }
+ | Tcpp_union  attributes   { Union, $1  (* TODO *) }
+ | Tclass      attributes   { Class, $1  (* TODO *) }
 
-
+/* Field declarations for C code */
 struct_decl2:
  | field_declaration { DeclarationField $1 }
  | TPtVirg { EmptyField $1  }
@@ -1936,14 +1987,45 @@ struct_decl2:
  | cpp_ifdef_directive/*(* struct_decl_list ... *)*/
      { IfdefStruct $1 }
 
+/* hope for no bitfields in C++ - not using decl causes a conflict
+with function definitions because the rule for matching the type
+is different, so a decision has to be made in an awkward place */
+cpp_struct_decl2:
+ | simple_field_declaration { DeclarationField $1 }
+/* | decl { DeclarationField $1 }*/
+ | TPtVirg { EmptyField $1  }
+
+ /*(* no conflict ? no need for a TMacroStruct ? apparently not as at struct
+    * the rule are slightly different.
+    *)*/
+ | identifier TOPar argument_list TCPar TPtVirg
+     { MacroDeclField ((fst $1, $3), [snd $1;$2;$4;$5;fakeInfo()]) }
+
+ /*(* cppext: *)*/
+ | cpp_directive
+     { CppDirectiveStruct $1 }
+ | cpp_ifdef_directive/*(* struct_decl_list ... *)*/
+     { IfdefStruct $1 }
+
+ /* C++ */
+ | function_definition
+                      { FunctionField $1 }
+ | Tpublic TDotDot    { PublicLabel [$1;$2] }
+ | Tprotected TDotDot { ProtectedLabel [$1;$2] }
+ | Tprivate TDotDot   { PrivateLabel [$1;$2] }
+
 
 field_declaration:
- | spec_qualif_list struct_declarator_list end_attributes_opt TPtVirg
+ | decl_spec2 struct_declarator_list end_attributes_opt TPtVirg
      {
-       let (attrs, ds) = $1 in
+       let ((attrs,_), ds) = $1 in
        let (returnType,storage) = fixDeclSpecForDecl ds in
-       if fst (unwrap storage) <> NoSto
-       then internal_error "parsing don't allow this";
+       (if fst (unwrap storage) <> NoSto
+       then
+	 raise
+	   (Semantic
+	      ("field_declaration: case 1: parsing don't allow this",
+	       Ast_c.parse_info_of_info $4)));
 
        let iistart = Ast_c.fakeInfo () in (* for parallelism with DeclList *)
        FieldDeclList ($2 +> (List.map (fun (f, iivirg) ->
@@ -1954,30 +2036,94 @@ field_declaration:
           *)
      }
 
- | spec_qualif_list end_attributes_opt TPtVirg
+ | decl_spec2 end_attributes_opt TPtVirg
      {
-       let (attrs, ds) = $1 in
+       let ((attrs,_), ds) = $1 in
        (* gccext: allow empty elements if it is a structdef or enumdef *)
        let (returnType,storage) = fixDeclSpecForDecl ds in
-       if fst (unwrap storage) <> NoSto
-       then internal_error "parsing don't allow this";
+       (if fst (unwrap storage) <> NoSto
+       then
+	 raise
+	   (Semantic
+	      ("field_declaration: case 2: parsing don't allow this",
+	       Ast_c.parse_info_of_info $3)));
 
        let iistart = Ast_c.fakeInfo () in (* for parallelism with DeclList *)
        FieldDeclList ([(Simple (None, returnType)) , []], [$3;iistart])
      }
+ | simple_type dotdot const_expr2 TPtVirg
+     /* specialized for the only thing that makes sense for an anonymous
+	 bitfield - don't need more than one and don't need struct etc types */
+     { let ty = ([], addTypeD ($1, nullDecl)) in
+       let decl = [(fun x -> BitField (None, x, $2, $3)),[]] in
+       let (attrs, ds) = ty in
+       let (returnType,storage) = fixDeclSpecForDecl ds in
+       (if fst (unwrap storage) <> NoSto
+       then
+	 raise
+	   (Semantic
+	      ("field_declaration: case 3: parsing don't allow this",
+	       Ast_c.parse_info_of_info $2)));
 
+       let iistart = Ast_c.fakeInfo () in (* for parallelism with DeclList *)
+       FieldDeclList (decl +> (List.map (fun (f, iivirg) ->
+         f returnType, iivirg))
+                         ,[$4;iistart])
+     }
 
+/* simpler for C++ - no attributes, no fields without names, and no bitfields
+   avoid conflicts with function definition */
+simple_field_declaration:
+ | decl_spec declaratorsfd_list TPtVirg
+     {
+       let ((attrs,_), ds) = $1 in
+       let (returnType,storage) = fixDeclSpecForDecl ds in
+       (if fst (unwrap storage) <> NoSto
+       then
+	 raise
+	   (Semantic
+	      ("simple_field_declaration: parsing don't allow this",
+	       Ast_c.parse_info_of_info $3)));
 
+       let iistart = Ast_c.fakeInfo () in (* for parallelism with DeclList *)
+       FieldDeclList ($2 +> (List.map (fun (f, iivirg) ->
+         f returnType, iivirg))
+                         ,[$3;iistart])
+         (* don't need to check if typedef or func initialised cos
+          * grammar don't allow typedef nor initialiser in struct
+          *)
+     }
+ | simple_type dotdot const_expr2 TPtVirg
+     /* specialized for the only thing that makes sense for an anonymous
+	 bitfield - don't need more than one and don't need struct etc types */
+     { let ty = ([], addTypeD ($1, nullDecl)) in
+       let decl = [(fun x -> BitField (None, x, $2, $3)),[]] in
+       let (attrs, ds) = ty in
+       let (returnType,storage) = fixDeclSpecForDecl ds in
+       (if fst (unwrap storage) <> NoSto
+       then
+	 raise
+	   (Semantic
+	      ("field_declaration: case 3: parsing don't allow this",
+	       Ast_c.parse_info_of_info $2)));
+
+       let iistart = Ast_c.fakeInfo () in (* for parallelism with DeclList *)
+       FieldDeclList (decl +> (List.map (fun (f, iivirg) ->
+         f returnType, iivirg))
+                         ,[$4;iistart])
+     }
 
 
 struct_declarator:
  | declaratorsd
      { (fun x -> Simple   (Some (fst $1), (snd $1) x)) }
- | dotdot const_expr2
-     { (fun x -> BitField (None, x, $1, $2)) }
  | declaratorsd dotdot const_expr2
      { (fun x -> BitField (Some (fst $1), ((snd $1) x), $2, $3)) }
 
+declaratorsfd:
+ declaratori
+   { let (dec,attr,endattr) = $1 in
+     (fun x -> Simple (Some (fst dec), (snd dec) x)) }
 
 /*(*----------------------------*)*/
 /*(* workarounds *)*/
@@ -1994,13 +2140,19 @@ declaratorsd:
 
 struct_or_union_spec: s_or_u_spec2 { dt "su" (); $1 }
 struct_or_union: struct_or_union2 { et "su" (); $1 }
+cpp_struct_or_union: cpp_struct_or_union2 { et "su" (); $1 }
 struct_decl: struct_decl2  { et "struct" (); $1 }
+cpp_struct_decl: cpp_struct_decl2  { et "struct" (); $1 }
 
 dotdot: TDotDot  { et "dotdot" (); $1 }
 const_expr2: const_expr { dt "const_expr2" (); $1 }
 
 struct_decl_list_gcc:
  | struct_decl_list  { $1 }
+ | /*(* empty *)*/       { [] } /*(* gccext: allow empty struct *)*/
+
+cpp_struct_decl_list_gcc:
+ | cpp_struct_decl_list  { $1 }
  | /*(* empty *)*/       { [] } /*(* gccext: allow empty struct *)*/
 
 
@@ -2062,7 +2214,7 @@ start_fun: start_fun2
 start_fun2: decl_spec declaratorfd
      { let (returnType,storage) = fixDeclSpecForFuncDef (snd $1) in
        let (id, attrs, endattrs) = $2 in
-       (fst id, fixOldCDecl ((snd id) returnType) , storage, (fst (fst $1))@(snd (fst $1))@attrs), endattrs
+       (fst id, fixOldCDecl ((snd id) returnType) , storage, (fst (fst $1))@(snd (fst $1))@attrs, [], []), endattrs
      }
   | ctor_dtor { $1, [] }
 
@@ -2073,14 +2225,43 @@ ctor_dtor:
      let ty = mk_ty (FunctionType (ret, (([], (false, []))))) [$2;$3] in
      let storage = ((NoSto,false),[]) in
      let attrs = [] in
-     (id, ty, storage, attrs) }
+     (id, ty, storage, attrs, [], []) }
+ | Tconstructorname topar tcpar TDotDot constr_extra_list {
+     let id = RegularName (mk_string_wrap $1) in
+     let ret = mk_ty NoType [] in
+     let ty = mk_ty (FunctionType (ret, (([], (false, []))))) [$2;$3] in
+     let storage = ((NoSto,false),[]) in
+     let attrs = [] in
+     (id, ty, storage, attrs, [$4], $5) }
  | Tconstructorname topar parameter_type_list tcpar {
      let id = RegularName (mk_string_wrap $1) in
      let ret = mk_ty NoType [] in
      let ty = mk_ty (FunctionType (ret, $3)) [$2;$4] in
      let storage = ((NoSto,false),[]) in
      let attrs = [] in
-     (id, ty, storage, attrs) }
+     (id, ty, storage, attrs, [], []) }
+ | Tconstructorname topar parameter_type_list tcpar TDotDot constr_extra_list {
+     let id = RegularName (mk_string_wrap $1) in
+     let ret = mk_ty NoType [] in
+     let ty = mk_ty (FunctionType (ret, $3)) [$2;$4] in
+     let storage = ((NoSto,false),[]) in
+     let attrs = [] in
+     (id, ty, storage, attrs, [$5], $6) }
+
+constr_extra:
+ | TIdent TOPar argument_list_ne TCPar
+     { let fn = mk_e(Ident (RegularName (mk_string_wrap $1))) [] in
+       (mk_e(FunCall (fn, $3)) [$2;$4]) }
+ | TIdent TOPar TCPar
+     { let fn = mk_e(Ident (RegularName (mk_string_wrap $1))) [] in
+       (mk_e(FunCall (fn, [])) [$2;$3]) }
+ | TypedefIdent TOPar argument_list_ne TCPar
+     { let fn = mk_e(Ident (RegularName (mk_string_wrap $1))) [] in
+       (mk_e(FunCall (fn, $3)) [$2;$4]) }
+ | TypedefIdent TOPar TCPar
+     { let fn = mk_e(Ident (RegularName (mk_string_wrap $1))) [] in
+       (mk_e(FunCall (fn, [])) [$2;$3]) }
+
 
 /*(*----------------------------*)*/
 /*(* workarounds *)*/
@@ -2100,7 +2281,6 @@ declaratorfd:
  /*(* gccext: *)*/
 | declarator end_attributes
    { et "declaratorfd" (); let (attr,dec) = $1 in dec, attr, $2 }
-
 
 /*(*************************************************************************)*/
 /*(* cpp directives *)*/
@@ -2337,7 +2517,7 @@ cpp_other:
      let ty = mk_ty (FunctionType (ret, paramlist)) [$2;$4] in
      let attrs = Ast_c.noattr in
      let sto = (NoSto, false), [] in
-     (id, fixOldCDecl ty, sto, attrs) in
+     (id, fixOldCDecl ty, sto, attrs, [], []) in
    let fundef = fixFunc ((fninfo, []), $5, None) in
    Definition fundef
  }
@@ -2391,8 +2571,19 @@ celem:
 
  | EOF        { FinalDef $1 }
 
+/*(*************************************************************************)*/
+/*(* C++ classes *)*/
+/*(*************************************************************************)*/
 
+base_class:
+   identifier_cpp              { ClassName $1, [] }
+ | Tpublic identifier_cpp      { CPublic $2,   [$1] }
+ | Tprotected identifier_cpp   { CProtected $2,[$1] }
+ | Tprivate identifier_cpp     { CPrivate $2,  [$1] }
 
+base_classes:
+   base_class { [$1,[]] }
+ | base_classes TComma base_class { ($3,  [$2])::$1 }
 
 /*(*************************************************************************)*/
 /*(* some generic workarounds *)*/
@@ -2471,6 +2662,10 @@ colon_option_list:
  | colon_option { [$1, []] }
  | colon_option_list TComma colon_option { $1 @ [$3, [$2]] }
 
+constr_extra_list:
+ | constr_extra                          { [$1, []] }
+ | constr_extra_list TComma constr_extra { $1 @ [$3,    [$2]] }
+
 
 argument_list_ne:
  | argument_ne                           { [$1, []] }
@@ -2490,6 +2685,10 @@ expression_list:
 struct_decl_list:
  | struct_decl                   { [$1] }
  | struct_decl_list struct_decl  { $1 @ [$2] }
+
+cpp_struct_decl_list:
+ | cpp_struct_decl                   { [$1] }
+ | cpp_struct_decl_list cpp_struct_decl  { $1 @ [$2] }
 
 
 struct_declarator_list:
@@ -2511,6 +2710,10 @@ init_declarator_list:
  | init_declarator_list TComma cpp_directive_list init_declarator_attrs
      { $1 @ [$4, [$2]] }
  | init_declarator_list TComma init_declarator_attrs { $1 @ [$3, [$2]] }
+
+declaratorsfd_list:
+ | declaratorsfd                            { [$1, []] }
+ | declaratorsfd_list TComma declaratorsfd  { $1 @ [$3, [$2]] }
 
 
 parameter_list:

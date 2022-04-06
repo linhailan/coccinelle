@@ -167,8 +167,8 @@ let keyword_table = Common.hash_of_list [
   "const",    (fun ii -> Tconst ii);
   "volatile", (fun ii -> Tvolatile ii);
 
-  "struct",  (fun ii -> Tstruct ii);
-  "union",   (fun ii -> Tunion ii);
+  "struct",  (fun ii -> if !Flag.c_plus_plus = Flag.Off then Tstruct ii else Tcpp_struct ii);
+  "union",   (fun ii -> if !Flag.c_plus_plus = Flag.Off then Tunion ii  else Tcpp_union ii);
   "enum",    (fun ii -> Tenum ii);
   "typedef", (fun ii -> Ttypedef ii);
 
@@ -239,7 +239,12 @@ let cpp_keyword_table = Common.hash_of_list [
   "namespace", (fun ii -> Tnamespace ii);
   "new",       (fun ii -> Tnew ii);
   "delete",    (fun ii -> Tdelete ii);
-  "using",     (fun ii -> TComment ii) ]
+  "using",     (fun ii -> TComment ii);
+  "constexpr", (fun ii -> Tconst ii);
+  "class",     (fun ii -> Tclass ii);
+  "private",   (fun ii -> Tprivate ii);
+  "protected", (fun ii -> Tprotected ii);
+  "public",    (fun ii -> Tpublic ii) ]
 
 let ibm_keyword_table = Common.hash_of_list [
   "decimal",   (fun ii -> Tdecimal ii);

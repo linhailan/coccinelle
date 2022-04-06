@@ -57,6 +57,7 @@ let new_test_parse_gen xs =
   Flag_parsing_c.debug_cpp := true;
   Flag_parsing_c.debug_etdt := false;
   Flag_parsing_c.filter_msg := true;
+  (if !Flag.c_plus_plus = Flag.Off then Flag.set_c_plus_plus None);
 
   (*let dirname_opt =
     match xs with
@@ -247,8 +248,8 @@ let local_test_cfg launchgv file =
       None -> ()
     | Some fn -> (* old: Flow_to_ast.test !Flag.show_flow def *)
 	try
-          let flow = Ast_to_flow.ast_to_control_flow e in
-          flow +> do_option (fun flow ->
+          let flows = Ast_to_flow.ast_to_control_flow e in
+	  let do_flow mkstring flow =
             Ast_to_flow.deadcode_detection flow;
             let flow = Ast_to_flow.annotate_loop_nodes flow in
 
@@ -258,16 +259,21 @@ let local_test_cfg launchgv file =
               then flow
               else Ctlcocci_integration.fix_flow_ctl flow
 *)
-              flow
-            in
+              flow in
 	    let filename =
 	      if launchgv
-	      then Filename.temp_file "output" ".dot"
+	      then Filename.temp_file (mkstring "output") ".dot"
 	      else
 		let fl = Filename.chop_extension (Filename.basename file) in
-		fl^":"^fn^".dot" in
-            Control_flow_c.G.print_ograph_mutable flow' (filename) launchgv
-          )
+		(mkstring(fl^":"^fn))^".dot" in
+            Control_flow_c.G.print_ograph_mutable flow' (filename) launchgv in
+	  let mkstring i x =
+	    if i > 0
+	    then Printf.sprintf "%s_%d" x i
+	    else x in
+	  Stdcompat.List.iteri
+	    (fun i (_,flow) -> flow +> do_option (do_flow (mkstring i)))
+	    flows
         with Ast_to_flow.Error (x) -> Ast_to_flow.report_error x
       )
 
@@ -283,12 +289,19 @@ let test_cfg_ifdef file =
 
   ast +> List.iter (fun e ->
     (try
-        let flow = Ast_to_flow.ast_to_control_flow e in
-        flow +> do_option (fun flow ->
+        let flows = Ast_to_flow.ast_to_control_flow e in
+	let do_flow mkstring flow =
           Ast_to_flow.deadcode_detection flow;
           let flow = Ast_to_flow.annotate_loop_nodes flow in
-          Control_flow_c.G.print_ograph_mutable flow ("/tmp/output.dot") true
-        )
+          Control_flow_c.G.print_ograph_mutable flow
+	    ((mkstring "/tmp/output")^".dot") true in
+	let mkstring i x =
+	  if i > 0
+	  then Printf.sprintf "%s_%d" x i
+	  else x in
+	Stdcompat.List.iteri
+	  (fun i (_,flow) -> flow +> do_option (do_flow (mkstring i)))
+	  flows
       with Ast_to_flow.Error (x) -> Ast_to_flow.report_error x
     )
   )

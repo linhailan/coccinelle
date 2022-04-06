@@ -185,7 +185,7 @@ let equal_structUnion a b =
   match a, b with
   | A.Struct, B.Struct -> true
   | A.Union,  B.Union -> true
-  | _, (B.Struct|B.Union) -> false
+  | _, (B.Struct|B.Union|B.Class) -> false
 
 let equal_sign a b =
   match a, b with
@@ -408,10 +408,15 @@ let split_signb_baseb_ii (baseb, ii) =
   | B.FloatType (B.CFloat),["float",i1] -> None, [i1]
   | B.FloatType (B.CDouble),["double",i1] -> None, [i1]
   | B.FloatType (B.CFloatComplex),["float",i1;"complex",i2] -> None, [i1;i2]
+  | B.FloatType (B.CFloatComplex),["complex",i1;"float",i2] -> None, [i1;i2]
   | B.FloatType (B.CDoubleComplex),["double",i1;"complex",i2] -> None, [i1;i2]
+  | B.FloatType (B.CDoubleComplex),["complex",i1;"double",i2] -> None, [i1;i2]
   | B.FloatType (B.CLongDouble),["long",i1;"double",i2] -> None,[i1;i2]
   | B.FloatType (B.CLongDoubleComplex),["long",i1;"double",i2;"complex",i3] ->
       None,[i1;i2;i3]
+
+  | B.FloatType (B.CUnknownComplex),["complex",i1] ->
+      error [i1] "complex should be double or float"
 
   | B.IntType (B.CChar), ["char",i1] -> None, [i1]
 
@@ -522,8 +527,10 @@ and unsplit_initialiser_bis comma_before = function
 (* coupling: same in type_annotater_c.ml *)
 let structdef_to_struct_name ty =
   match ty with
-  | qu, (B.StructUnion (su, sopt, fields), iis) ->
+  | qu, (B.StructUnion (su, sopt, base_classes, fields), iis) ->
       (match sopt,iis with
+      | Some s , [i1;i2;i3;i4;i5] ->
+          qu, (B.StructUnionName (su, s), [i1;i2])
       | Some s , [i1;i2;i3;i4] ->
           qu, (B.StructUnionName (su, s), [i1;i2])
       | None, _ ->
@@ -2506,7 +2513,7 @@ and onedecl = fun allminus decla (declb, iiptvirgb, iistob) ->
 
      (match A.unwrap tya1, typb1 with
      | A.StructUnionDef(tya2, lba, declsa, rba),
-      (B.StructUnion (sub, sbopt, declsb), ii) ->
+      (B.StructUnion (sub, sbopt, base_classes, declsb), ii) ->
 
        let (iisub, iisbopt, lbb, rbb) =
          match sbopt with
@@ -2524,7 +2531,7 @@ and onedecl = fun allminus decla (declb, iiptvirgb, iistob) ->
        in
        let structnameb =
          structdef_to_struct_name
-           (Ast_c.nQ, (B.StructUnion (sub, sbopt, declsb), ii))
+           (Ast_c.nQ, (B.StructUnion (sub, sbopt, base_classes, declsb), ii))
        in
        let fake_typeb =
          Ast_c.nQ,((B.TypeName (nameidb, Some
@@ -2549,7 +2556,7 @@ and onedecl = fun allminus decla (declb, iiptvirgb, iistob) ->
 		 let tya0 = A.Type(allminus, cv1, tya1) +> A.rewrap tya0 in
 
 
-		 let typb1 = B.StructUnion (sub,sbopt, declsb),
+		 let typb1 = B.StructUnion (sub,sbopt,base_classes,declsb),
                    [iisub] @ iisbopt @ [lbb;rbb] in
 		 let typb0 = ((qu, il), typb1) in
 
@@ -2590,7 +2597,7 @@ and onedecl = fun allminus decla (declb, iiptvirgb, iistob) ->
                match structnameb with
                | _nQ, (B.StructUnionName (sub, s), [iisub;iisbopt]) ->
 
-                   let typb1 = B.StructUnion (sub,sbopt, declsb),
+                   let typb1 = B.StructUnion (sub,sbopt,base_classes,declsb),
                      [iisub;iisbopt;lbb;rbb] in
                    let typb0 = ((qu, il), typb1) in
 
@@ -3309,7 +3316,11 @@ and (struct_fields: (A.annotated_field list, B.field list) matcher) =
 	   | Ast_c.EmptyField info -> true
 	   | Ast_c.MacroDeclField decl -> true
 	   | Ast_c.CppDirectiveStruct cpp -> false
-	   | Ast_c.IfdefStruct ifdef -> false)
+	   | Ast_c.IfdefStruct ifdef -> false
+	   | Ast_c.FunctionField _ -> false
+	   | Ast_c.PublicLabel _ -> false
+	   | Ast_c.ProtectedLabel _ -> false
+	   | Ast_c.PrivateLabel _ -> false)
 	 l) in
   list_matcher match_dots build_dots match_comma build_comma
     match_metalist build_metalist mktermval
@@ -3346,7 +3357,12 @@ and (struct_field: (A.annotated_field, B.field) matcher) =
 
 	(match A.unwrap ifa,fb with
 	| A.MetaField (ida,cstr,keep,inherited), B.CppDirectiveStruct _
-	| A.MetaField (ida,cstr,keep,inherited), B.IfdefStruct _ ->
+	| A.MetaField (ida,cstr,keep,inherited), B.IfdefStruct _
+	  (* C++: should these be matched? *)
+	| A.MetaField (ida,cstr,keep,inherited), B.FunctionField _
+	| A.MetaField (ida,cstr,keep,inherited), B.PublicLabel _
+	| A.MetaField (ida,cstr,keep,inherited), B.ProtectedLabel _
+	| A.MetaField (ida,cstr,keep,inherited), B.PrivateLabel _ ->
 	    (* not really fields *) fail
 	| A.MetaField (ida,cstr,keep,inherited), _ ->
 	    let max_min _ = Lib_parsing_c.ii_of_field fb in
@@ -3426,7 +3442,11 @@ and (struct_field: (A.annotated_field, B.field) matcher) =
 	| _,B.MacroDeclField ((sb,ebs),ii) -> fail
 
 	| _,B.CppDirectiveStruct directive -> fail
-	| _,B.IfdefStruct directive -> fail)
+	| _,B.IfdefStruct directive -> fail
+	| _,B.FunctionField _ -> fail
+	| _,B.PublicLabel _ -> fail
+	| _,B.ProtectedLabel _ -> fail
+	| _,B.PrivateLabel _ -> fail)
 
 (* ---------------------------------------------------------------------- *)
 
@@ -3657,6 +3677,7 @@ and simulate_signed ta basea stringsa signaopt tb baseb ii rebuilda =
                (rebuilda ([stringa1;stringa2], signaopt)) +> A.rewrap ta,
                (B.BaseType baseb, [ibaseb1;ibaseb2])
              )))
+
 
       | A.LongDoubleComplexType, B.FloatType (B.CLongDoubleComplex) ->
            assert (signaopt = None);
@@ -3941,7 +3962,7 @@ and (typeC: (A.typeC, Ast_c.typeC) matcher) =
 
 
     | A.StructUnionDef(ty, lba, declsa, rba),
-     (B.StructUnion (sub, sbopt, declsb), ii) ->
+     (B.StructUnion (sub, sbopt, base_classes, declsb), ii) ->
 
        let (ii_sub_sb, lbb, rbb) =
 	 match ii with
@@ -3999,7 +4020,7 @@ and (typeC: (A.typeC, Ast_c.typeC) matcher) =
 
               return (
                 (A.StructUnionDef(ty, lba, declsa, rba)) +> A.rewrap ta,
-                (B.StructUnion (sub, sbopt, declsb),ii_sub_sb@[lbb;rbb])
+                (B.StructUnion (sub, sbopt, base_classes, declsb),ii_sub_sb@[lbb;rbb])
               )))))
 
 
@@ -4149,7 +4170,7 @@ and (typeC: (A.typeC, Ast_c.typeC) matcher) =
 
     | _,
      ((B.AutoType | B.TypeName _ | B.StructUnionName (_, _) | B.EnumName _ |
-      B.StructUnion (_, _, _) |
+      B.StructUnion (_, _, _, _) |
       B.FunctionType _ | B.Array (_, _) | B.Decimal(_, _) |
       B.Pointer _ | B.BaseType _),
      _)
@@ -4571,6 +4592,9 @@ and compatible_typeC a (b,local) =
     | _, (_, (B.FieldType (typb, _, _), _)) ->
 	loop tya typb
 
+    | _, (_, (B.ParenType typb, _)) ->
+	loop tya typb
+
   (* subtil: must be after the MetaType case *)
     | a, (qub, (B.TypeName (_namesb, Some b), noii)) ->
       (* kind of typedef iso *)
@@ -4582,8 +4606,8 @@ and compatible_typeC a (b,local) =
       (_,
       ((
        B.AutoType|
-       B.TypeOfType _|B.TypeOfExpr _|B.ParenType _|
-       B.EnumName _|B.StructUnion (_, _, _)|B.Enum (_, _)|
+       B.TypeOfType _|B.TypeOfExpr _|
+       B.EnumName _|B.StructUnion (_, _, _, _)|B.Enum (_, _)|
        B.StructUnionName (_, _)|
        B.FunctionType _|
        B.Array (_, _)|B.Decimal (_, _)|B.Pointer _|B.TypeName _|
@@ -4644,7 +4668,7 @@ and equal_structUnion_type_cocci a b =
   match Ast_cocci.unwrap_mcode a, b with
     A.Struct, B.Struct -> true
   | A.Union,  B.Union -> true
-  | _, (B.Struct | B.Union) -> false
+  | _, (B.Struct | B.Union | B.Class) -> false
 
 
 
@@ -5088,6 +5112,7 @@ let rec (rule_elem_node: (A.rule_elem, F.node) matcher) =
     F.FunHeader ({B.f_name = nameidb;
                   f_type = (retb, (paramsb, (isvaargs, iidotsb)));
                   f_storage = stob;
+		  f_constr_inherited = constr_inh;
                   f_attr = attrs;
                   f_endattr = endattrs;
                   f_body = body;
@@ -5102,6 +5127,14 @@ let rec (rule_elem_node: (A.rule_elem, F.node) matcher) =
 
       (match ii with
       | ioparenb::icparenb::iifakestart::iistob ->
+
+	  let (iidotdotb,iistob) =
+	    if !Flag.c_plus_plus = Flag.Off
+	    then ([],iistob)
+	    else
+	      match constr_inh with
+		[] -> ([],iistob)
+	      | _ -> ([List.hd iistob],List.tl iistob) in
 
           (* maybe important to put ident as the first tokens to transform.
            * It's related to transform_proto. So don't change order
@@ -5142,12 +5175,13 @@ let rec (rule_elem_node: (A.rule_elem, F.node) matcher) =
                F.FunHeader ({B.f_name = nameidb;
                              f_type = (retb, (paramsb, (isvaargs, iidotsb)));
                              f_storage = stob;
+			     f_constr_inherited = constr_inh;
                              f_attr = attrs;
                              f_endattr = endattrs;
                              f_body = body;
                              f_old_c_style = oldstyle; (* TODO *)
                            },
-                           ioparenb::icparenb::iifakestart::iistob)
+                           ioparenb::icparenb::iifakestart::iidotdotb@iistob)
                 )
               )))))))))))
       | _ -> raise (Impossible 49)
@@ -5545,6 +5579,7 @@ let rec (rule_elem_node: (A.rule_elem, F.node) matcher) =
   (* todo?: print a warning at least ? *)
   | _, F.CaseRange _
   | _, F.Asm _
+  | _, F.NestedFunc _
     -> fail2()
   | _, F.MacroTop _
     -> fail2()

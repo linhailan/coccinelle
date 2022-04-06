@@ -90,22 +90,21 @@ let print_flow flow =
 
 
 let ast_to_flow_with_error_messages2 x =
-  let flowopt =
+  let flows =
     try Ast_to_flow.ast_to_control_flow x
-    with Ast_to_flow.Error x ->
-      Ast_to_flow.report_error x;
-      None
-  in
-  flowopt +> do_option (fun flow ->
+    with Ast_to_flow.Error msg ->
+      Ast_to_flow.report_error msg;
+      [(Ast_to_flow.Outer x,None)] in
+  let do_flow flow =
     (* This time even if there is a deadcode, we still have a
      * flow graph, so I can try the transformation and hope the
      * deadcode will not bother us.
      *)
     try Ast_to_flow.deadcode_detection flow
     with Ast_to_flow.Error (Ast_to_flow.DeadCode x) ->
-      Ast_to_flow.report_error (Ast_to_flow.DeadCode x);
-  );
-  flowopt
+      Ast_to_flow.report_error (Ast_to_flow.DeadCode x) in
+  flows +> List.iter (fun (_,flow) -> flow +> do_option do_flow);
+  flows
 let ast_to_flow_with_error_messages a =
   Common.profile_code "flow" (fun () -> ast_to_flow_with_error_messages2 a)
 
@@ -569,16 +568,13 @@ let check_macro_in_sp_and_adjust = function
 	  Hashtbl.remove !Parse_c._defs s
 	end)
 
-
 let contain_loop gopt =
-  match gopt with
-  | Some g ->
-      Control_flow_c.KeyMap.exists (fun xi node ->
-        Control_flow_c.extract_is_loop node
-      ) g#nodes
-  | None -> true (* means nothing, if no g then will not model check *)
-
-
+    match gopt with
+    | Some g ->
+	g#nodes +>
+	Control_flow_c.KeyMap.exists (fun xi node ->
+          Control_flow_c.extract_is_loop node)
+    | None -> true (* means nothing, if no g then will not model check *)
 
 let sp_contain_typed_metavar_z toplevel_list_list =
   let bind x y = x || y in
@@ -794,7 +790,8 @@ and update_rel_pos_bis choose_ref xs =
 (*****************************************************************************)
 
 type toplevel_c_info = {
-  ast_c: Ast_c.toplevel; (* contain refs so can be modified *)
+  (* contain refs so can be modified *)
+  ast_c: Ast_c.toplevel Ast_to_flow.outer;
   start_end: (Ast_c.posl * Ast_c.posl) Lazy.t;
   tokens_c: Parser_c.token list;
   fullstring: string;
@@ -925,42 +922,43 @@ let concat_headers_and_c (ccs: file_info list)
 	(fun x -> x.asts +> List.map (fun x' -> (x', x.fname, x.full_fname)))))
 
 let for_unparser xs =
-  xs +> List.map (fun x ->
-    (x.ast_c, (x.fullstring, x.tokens_c)), Unparse_c.PPviastr
-  )
+  xs +> List.fold_left (fun prev x ->
+    match x.ast_c with
+      Ast_to_flow.Outer ast ->
+	((ast, (x.fullstring, x.tokens_c)), Unparse_c.PPviastr) :: prev
+    | Ast_to_flow.Inner ast -> prev
+  ) [] +> List.rev
 
 let gen_pdf_graph () =
   (Ctl_engine.get_graph_files ()) +> List.iter (fun outfile ->
-  Printf.printf "Generation of %s%!" outfile;
-  let filename_stack = Ctl_engine.get_graph_comp_files outfile in
-  List.iter (fun filename ->
-    ignore (Unix.system ("dot " ^ filename ^ " -Tpdf  -o " ^ filename ^ ".pdf;"))
-	    ) filename_stack;
-  let (head,tail) = (List.hd filename_stack, List.tl filename_stack) in
+    Printf.printf "Generation of %s.pdf\n%!" outfile;
+    let filename_stack = Ctl_engine.get_graph_comp_files outfile in
+    List.iter
+      (fun filename ->
+	ignore
+	  (Unix.system
+	     (Printf.sprintf "dot %s -Tpdf  -o %s.pdf;" filename filename)))
+      filename_stack;
+    let (head,tail) = (List.hd filename_stack, List.tl filename_stack) in
     ignore(Unix.system ("cp " ^ head ^ ".pdf " ^ outfile ^ ".pdf;"));
-    tail +> List.iter (fun filename ->
-      ignore(Unix.system ("mv " ^ outfile ^ ".pdf /tmp/tmp.pdf;"));
-      ignore(Unix.system ("pdftk " ^ filename ^ ".pdf /tmp/tmp.pdf cat output " ^ outfile ^ ".pdf"));
-	      );
-    ignore(Unix.system ("rm /tmp/tmp.pdf;"));
-    List.iter (fun filename ->
-	ignore (Unix.system ("rm " ^ filename ^ " " ^ filename ^ ".pdf;"))
-	    ) filename_stack;
-  Printf.printf " - Done\n")
+    tail +>
+    List.iter
+      (fun filename ->
+	Sys.rename (outfile ^ ".pdf") "/tmp/tmp.pdf";
+	ignore
+	  (Unix.system
+	     (Printf.sprintf
+		"pdftk %s.pdf /tmp/tmp.pdf cat output %s.pdf"
+		filename outfile)));
+    Sys.remove "/tmp/tmp.pdf";
+    List.iter
+      (fun filename ->
+	Sys.remove filename;
+	Sys.remove (filename ^ ".pdf"))
+      filename_stack;
+    Printf.printf " - Done\n")
 
-let local_python_code = "\
-from coccinelle import *
-from coccilib.iteration import Iteration
-"
-
-let python_code =
-  "import coccinelle\n"^
-    "import coccilib\n"^
-    "import coccilib.org\n"^
-    "import coccilib.report\n" ^
-    "import coccilib.xml_firehose\n" ^
-    local_python_code ^
-    "cocci = Cocci()\n"
+let python_code = "from coccinelle import *\n"
 
 let make_init lang pos code rule_info mv =
   {
@@ -1092,8 +1090,8 @@ let build_info_program env ranges (cprogram,typedefs,macros) =
 	((start_line,start_offset),(end_line,end_offset))) in
 
     let flow _ =
-      ast_to_flow_with_error_messages c +>
-      Common.map_option (fun flow ->
+      let flows = ast_to_flow_with_error_messages c in
+      let fix_flow flow =
         let flow = Ast_to_flow.annotate_loop_nodes flow in
 
         (* remove the fake nodes for julia *)
@@ -1102,10 +1100,9 @@ let build_info_program env ranges (cprogram,typedefs,macros) =
         if !Flag_cocci.show_flow then print_flow fixed_flow;
         if !Flag_cocci.show_before_fixed_flow then print_flow flow;
 
-        fixed_flow
-      )
-    in
-    let flow =
+	fixed_flow in
+      flows +> List.map (fun (c,flow) -> (c, flow +> fmap fix_flow)) in
+    let flows =
       match ranges with
 	None -> flow()
       | Some ranges ->
@@ -1126,50 +1123,68 @@ let build_info_program env ranges (cprogram,typedefs,macros) =
 	      ranges in
 	  if included && not excluded
 	  then flow()
-	  else None in
-    {
-      ast_c = c; (* contain refs so can be modified *)
-      start_end = start_end;
-      tokens_c = tokens;
-      fullstring = fullstr;
+	  else [(Ast_to_flow.Outer c,None)] in
+    let was_modified = ref false in
+    List.map
+      (function (c,flow) ->
+	let start_end =
+	  match c with
+	    Ast_to_flow.Outer c | Ast_to_flow.Inner c ->
+	      lazy
+		(let (_,_,(start_line,start_offset),(end_line,end_offset)) =
+		  Lib_parsing_c.lin_col_by_pos
+		    (Lib_parsing_c.ii_of_toplevel c) in
+		((start_line,start_offset),(end_line,end_offset))) in
+	{
+	ast_c = c; (* contain refs so can be modified *)
+	start_end = start_end;
+	tokens_c = tokens;
+	fullstring = fullstr;
 
-      flow = flow;
+	flow = flow;
 
-      contain_loop = contain_loop flow;
+	contain_loop = contain_loop flow;
 
-      env_typing_before = enva;
-      env_typing_after = envb;
+	env_typing_before = enva;
+	env_typing_after = envb;
 
-      was_modified = ref false;
+	was_modified = was_modified;
 
-      all_typedefs = typedefs;
-      all_macros = macros;
-    })
-
+	all_typedefs = typedefs;
+	all_macros = macros;
+      })
+      flows) +> List.concat
 
 
 (* Optimization. Try not unparse/reparse the whole file when have modifs  *)
 let rebuild_info_program cs file short_file isexp parse_strings =
-  cs +> List.map (fun c ->
-    if !(c.was_modified)
-    then
-      let file = Common.new_temp_file "cocci_small_output" ("-" ^ short_file) in
-      cfile_of_program
-        [(c.ast_c, (c.fullstring, c.tokens_c)), Unparse_c.PPnormal]
-        file;
+  cs +>
+  List.map
+    (fun c ->
+      if !(c.was_modified)
+      then
+	match c.ast_c with
+	  Ast_to_flow.Outer ast_c ->
+	    let file =
+	      Common.new_temp_file "cocci_small_output" ("-" ^ short_file) in
+	    cfile_of_program
+              [(ast_c, (c.fullstring, c.tokens_c)), Unparse_c.PPnormal]
+              file;
 
-      (* cat file; *)
-      let cprogram =
-	cprogram_of_file c.all_typedefs c.all_macros parse_strings false file in
-      let xs = build_info_program c.env_typing_before None cprogram in
+	    (* cat file; *)
+	    let cprogram =
+	      cprogram_of_file c.all_typedefs c.all_macros parse_strings
+		false file in
+	    let xs = build_info_program c.env_typing_before None cprogram in
 
-      (* TODO: assert env has not changed,
-      * if yes then must also reparse what follows even if not modified.
-      * Do that only if contain_typedmetavar of course, so good opti.
-      *)
-      (* Common.list_init xs *) (* get rid of the FinalDef *)
-      xs
-    else [c]
+	    (* TODO: assert env has not changed,
+	     * if yes then must also reparse what follows even if not modified.
+	     * Do that only if contain_typedmetavar of course, so good opti.
+             *)
+             (* Common.list_init xs *) (* get rid of the FinalDef *)
+	    xs
+	| _ -> []
+      else [c]
   ) +> List.concat
 
 
@@ -1270,8 +1285,15 @@ let prepare_c files choose_includes parse_strings has_changes
 	parse_info.Parse_c.parse_trees in
     (match kind with
       | Source ->
-        let f x = x.ast_c in
-        ignore(update_include_rel_pos (List.map f annotated_parse_trees))
+	let asts =
+	  List.rev
+	    (List.fold_left
+	       (fun prev x ->
+		 match x.ast_c with
+		   Ast_to_flow.Outer x -> x :: prev
+		 | _-> prev)
+	       [] annotated_parse_trees) in
+        ignore(update_include_rel_pos asts)
       | Header ->
         env :=
         if annotated_parse_trees = []
@@ -1432,7 +1454,7 @@ let python_application mv ve script_vars r =
     Pycocci.build_classes (List.map (function (x,y) -> x) ve);
     Pycocci.construct_variables mv ve;
     Pycocci.construct_script_variables script_vars;
-    let _ = Pycocci.run r.scr_pos (local_python_code ^r.script_code) in
+    let _ = Pycocci.run r.scr_pos (python_code ^r.script_code) in
     if !Pycocci.exited
     then raise Exited
     else if !Pycocci.inc_match
@@ -1882,9 +1904,12 @@ and process_a_generated_a_env_a_toplevel rule env ccs =
 (* does side effects on C ast and on Cocci info rule *)
 and process_a_ctl_a_env_a_toplevel2 r e c f =
  indent_do (fun () ->
-   show_or_not_celem "trying" c.ast_c c.start_end;
-   Flag.currentfile := Some (f ^ ":" ^get_celem c.ast_c);
-   match (r.ctl,c.ast_c) with
+   let ast =
+     match c.ast_c with
+       Ast_to_flow.Outer ast | Ast_to_flow.Inner ast -> ast in
+   show_or_not_celem "trying" ast c.start_end;
+   Flag.currentfile := Some (f ^ ":" ^get_celem ast);
+   match (r.ctl,ast) with
      ((Asttoctl2.NONDECL ctl,t),Ast_c.Declaration _) -> None
    | ((Asttoctl2.NONDECL ctl,t), _)
    | ((Asttoctl2.CODE ctl,t), _) ->
@@ -1906,7 +1931,7 @@ and process_a_ctl_a_env_a_toplevel2 r e c f =
        then None
        else
 	 begin
-	   show_or_not_celem "found match in" c.ast_c c.start_end;
+	   show_or_not_celem "found match in" ast c.start_end;
 	   show_or_not_trans_info trans_info;
 	   List.iter (show_or_not_binding "out") newbindings;
 

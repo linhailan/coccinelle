@@ -190,7 +190,7 @@ and fullType = typeQualifier * typeC
   | FunctionType    of functionType
 
   | Enum            of string option * enumType
-  | StructUnion     of structUnion * string option * structType (* new scope *)
+  | StructUnion     of structUnion * string option * base_class wrap2 list (* C++ *) * structType (* new scope *)
 
   | EnumName        of string
   | StructUnionName of structUnion * string
@@ -239,16 +239,23 @@ and fullType = typeQualifier * typeC
             and sign = Signed | UnSigned
 
           and floatType = CFloat | CDouble | CLongDouble |
-	                  CFloatComplex | CDoubleComplex | CLongDoubleComplex
+	                  CFloatComplex | CDoubleComplex | CLongDoubleComplex |
+			  CUnknownComplex (* only for parsing *)
 
 
      (* -------------------------------------- *)
-     and structUnion = Struct | Union
+     and structUnion = Struct | Union | Class
      and structType  = field list
          and field =
            | DeclarationField of field_declaration
            (* gccext: *)
            | EmptyField of info
+
+	   (* C++ *)
+	   | FunctionField of definition
+	   | PublicLabel of info list
+	   | ProtectedLabel of info list
+	   | PrivateLabel of info list
 
             (* cppext: *)
            | MacroDeclField of (string * argument wrap2 list)
@@ -634,12 +641,24 @@ and definition = definitionbis wrap (* ( ) { } fakestart sto *)
   { f_name: name;
     f_type: functionType; (* less? a functionType2 ? *)
     f_storage: storage;
+    f_constr_inherited: expression wrap2 list;
     f_body: compound;
     f_attr: attribute list; (* gccext: *)
     f_endattr: attribute list; (* gccext: *)
     f_old_c_style: declaration list option;
   }
   (* cppext: IfdefFunHeader TODO *)
+
+(* ------------------------------------------------------------------------- *)
+(* C++ base classes *)
+(* ------------------------------------------------------------------------- *)
+
+and base_class = base_class_bis wrap
+  and base_class_bis =
+    ClassName of name
+  | CPublic of name
+  | CProtected of name
+  | CPrivate of name
 
 (* ------------------------------------------------------------------------- *)
 (* cppext: cpp directives, #ifdef, #define and #include body *)
